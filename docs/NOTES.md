@@ -213,3 +213,22 @@ are unbound actions and progressively enhance as a single hidden
 `$ACTION_<n>:1` (the bound args, JSON-encoded). Submitting those three
 fields alongside the visible form fields reproduces exactly what a
 real browser posts with JS disabled.
+
+**Proved behaviorally**, end to end through the real forms and (for
+the member case) also directly against Supabase to bypass the UI
+entirely:
+
+- **Member**: blocked at the middleware layer (`GET /guides/new` →
+  307 to `/`) *and* at RLS when bypassing the UI and calling
+  `supabase.from('guides').insert(...)` directly as a signed-in member
+  — `new row violates row-level security policy for table "guides"`.
+- **Trainer**: created a guide as a draft, edited it, published it,
+  and deleted it — all through the real `/guides/new` and
+  `/guides/[id]/edit` forms, each step verified against the database
+  afterward.
+- **Admin**: opened the trainer's seeded "Push/Pull/Legs for
+  Beginners" guide at `/guides/[id]/edit` (readable and editable
+  despite not being the author), changed its title and unpublished it
+  through the real form — `author_id` stayed the trainer's, confirming
+  admin edits don't reassign ownership. Restored the guide's original
+  title/body/status afterward so seed data stays clean.
