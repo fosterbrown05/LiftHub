@@ -130,3 +130,42 @@ directly and set `role = 'trainer'` / `role = 'admin'` once, at
 bootstrap. Every role change from then on should go through
 `set_user_role()` like normal — the seed script is a one-time
 infrastructure-level exception, not a pattern to reuse elsewhere.
+
+## 2026-07-09 — Role gate in proxy.ts (design doc §3.3)
+
+`updateSession` (lib/supabase/middleware.ts) now returns
+`{ supabase, response, user }` instead of just the refreshed response,
+so `proxy.ts` can read who's signed in without a second round-trip.
+
+`proxy.ts` itself: `/login`/`/signup` stay public, `/api/*` is left
+alone (personalize enforces its own auth/rate-limit per §5.1). Every
+other route requires a session — including `/`, since §3.2 requires
+sign-in for browse too, not just the two obviously-gated routes.
+`/admin*` requires admin, `/dashboard*` and the editor routes
+(`/guides/new`, `/guides/[id]/edit`) require trainer or admin, checked
+via a `profiles` query **per gated request**, not a JWT claim — so a
+member promoted to trainer sees `/dashboard` unlock on their very next
+request rather than after their token refreshes. Signed-in-but-not-
+permitted redirects to `/`, not `/login`.
+
+Side effect noted but not fixed yet: `app/page.tsx`'s "not signed in"
+branch (Login/Sign up links) is now unreachable in normal navigation,
+since the proxy redirects anonymous `/` before the page renders. Left
+alone for now — `/` becomes the real browse page in a later step and
+this resolves itself then.
+
+**Proved behaviorally** against the three seeded accounts
+(member/trainer/admin@lifthub.dev) plus an unauthenticated request,
+requesting `/`, `/dashboard`, `/admin/users` as each:
+
+| Role | `/` | `/dashboard` | `/admin/users` |
+|---|---|---|---|
+| (none) | 307 → `/login` | 307 → `/login` | 307 → `/login` |
+| member | 200 | 307 → `/` | 307 → `/` |
+| trainer | 200 | 404 (gate passed, no page yet) | 307 → `/` |
+| admin | 200 | 404 (gate passed) | 404 (gate passed) |
+
+A 404 here means the proxy let the request through to Next's router,
+which has no page at that path yet (dashboard/admin pages land in a
+later build-order step) — the absence of a redirect is the actual
+signal that the role check passed, not the 404 itself.
