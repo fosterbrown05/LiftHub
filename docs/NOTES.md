@@ -41,3 +41,63 @@ paragraph breaks).
 Smoke-tested against the live project (real signup/login/logout, real
 RLS-blocked anon reads/writes, real trigger-created profile row) with
 temporary test accounts, cleaned up afterward via the admin API.
+
+## 2026-07-09 — Found: `revoke update (role)` is a no-op on Supabase
+
+While re-verifying the RLS smoke tests, a signed-in member successfully
+updated their own `profiles.role` to `'admin'` directly via
+`supabase.from('profiles').update({ role: 'admin' })` — something
+migration 0003 is explicitly supposed to prevent.
+
+**Root cause**: Supabase provisions every new table with a **table-level**
+grant to `anon`/`authenticated`/`service_role` (`alter default
+privileges ... grant all on tables to ...`, configured once at project
+setup, applied automatically whenever a migration creates a new table).
+`pg_class.relacl` on `profiles` confirms this:
+`authenticated=arwdDxtm/postgres` — full privileges, all columns.
+
+`REVOKE UPDATE (role) ON profiles FROM authenticated` only removes a
+**column-level** ACL entry (`pg_attribute.attacl`). Since no
+column-level grant existed for `role` (`attacl` is `null` — the only
+grant is the table-level one), the revoke has nothing to remove. It
+runs without error and silently does nothing. Postgres evaluates column
+access as table-level OR column-level, so the untouched table-level
+grant still permits the update.
+
+**Downstream effect that made this confusing initially**: a follow-up
+test called `set_user_role()` as a non-admin and it didn't raise
+`'admins only'` as expected. That wasn't a second bug — the same test
+user had already self-promoted to a *real* admin one step earlier via
+the direct update, so `my_role()` correctly saw an admin caller. Once
+the root cause (the no-op revoke) is fixed, that check should behave
+correctly on its own.
+
+**Fix**, added as `0004_fix_role_column_grant.sql` rather than rewriting
+`0003_rls.sql` — keeps `0003` verbatim to the reviewed design doc and
+preserves the audit trail (what was reviewed, what broke, what fixed
+it) across separate commits:
+
+```sql
+revoke update on public.profiles from authenticated;
+grant update (display_name, equipment, days_per_week, level) on public.profiles to authenticated;
+```
+
+**Verified via catalog inspection after applying 0004**:
+`pg_class.relacl` on `profiles` now shows `authenticated=ardDxtm` (the
+`w`/UPDATE bit gone from the table-level grant). `pg_attribute.attacl`
+shows `authenticated=w` on `display_name`, `equipment`, `days_per_week`,
+and `level` only — `role` has no grant anywhere, table- or
+column-level.
+
+**Verified behaviorally** with a real signed-in member session (anon
+key, temporary confirmed test account, cleaned up after):
+
+- `supabase.from('profiles').update({ role: 'admin' }).eq('id', myId)`
+  → refused: `permission denied for table profiles`.
+- `supabase.from('profiles').update({ display_name: 'Renamed By Self' }).eq('id', myId)`
+  → succeeded.
+- Re-read via the service-role client confirmed the row's actual state:
+  `role` still `'member'`, `display_name` updated to `'Renamed By
+  Self'` — the write partially applied (the allowed column) and
+  rejected the disallowed one, rather than failing the whole statement
+  or silently dropping the role change.
