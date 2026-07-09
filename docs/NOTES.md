@@ -101,3 +101,32 @@ key, temporary confirmed test account, cleaned up after):
   Self'` — the write partially applied (the allowed column) and
   rejected the disallowed one, rather than failing the whole statement
   or silently dropping the role change.
+
+## 2026-07-09 — Seed script and the first-admin chicken-and-egg
+
+`scripts/seed.mjs` creates one user per role (`member@lifthub.dev`,
+`trainer@lifthub.dev`, `admin@lifthub.dev`, shared dev password) plus
+five sample guides across all four categories, owned by the trainer
+(one left as `draft` to exercise the owner/admin-only visibility rule
+later).
+
+**Why the script runs with the service role key, not a normal signed-in
+client**: promoting a user to trainer or admin has exactly one
+legitimate path in this app — `set_user_role()`, which checks
+`my_role() = 'admin'` before writing anything. That function is
+correct and should stay the only way roles change *after* the app has
+its first admin. But it can't be how the *first* admin is created:
+there's no admin yet to call it, and a plain client-side update to
+`profiles.role` is exactly what migration 0004 blocks. Every legitimate
+path is deliberately closed off.
+
+The way out is that `set_user_role()` and RLS both govern the
+`authenticated` Postgres role — they say nothing about `service_role`,
+which Supabase grants full table access and RLS bypass by design (it's
+meant for exactly this: trusted server-side code operating outside the
+app's own permission model). The seed script uses that same service
+role client the personalize route will use, to reach into `profiles`
+directly and set `role = 'trainer'` / `role = 'admin'` once, at
+bootstrap. Every role change from then on should go through
+`set_user_role()` like normal — the seed script is a one-time
+infrastructure-level exception, not a pattern to reuse elsewhere.
