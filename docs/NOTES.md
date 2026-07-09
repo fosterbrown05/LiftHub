@@ -169,3 +169,47 @@ A 404 here means the proxy let the request through to Next's router,
 which has no page at that path yet (dashboard/admin pages land in a
 later build-order step) — the absence of a redirect is the actual
 signal that the role check passed, not the 404 itself.
+
+## 2026-07-09 — Guide CRUD: dashboard + editor
+
+Built `/dashboard` (`app/dashboard/page.tsx`), `/guides/new` and
+`/guides/[id]/edit` (`components/GuideForm.tsx` shared between them),
+and `app/guides/actions.ts` (create/update/delete server actions).
+
+A few decisions worth recording:
+
+- **`guides` has no author-stamping trigger**, unlike `qa_posts`
+  (migration 0002 only stamps `qa_posts.author_id`/`author_role`). So
+  `createGuide` sets `author_id` itself from the session; `guides_insert`'s
+  `with check (author_id = auth.uid() and ...)` is the backstop if that
+  code were ever wrong, not the primary mechanism.
+- **Dashboard scoping is narrower than what RLS alone would allow.**
+  `guides_select` lets a trainer read *any* published guide, not just
+  their own — but the dashboard query explicitly filters
+  `author_id = user.id` for trainers (admins get every guide, per the
+  requirements doc). The dashboard means "your guides," and RLS being
+  permissive elsewhere doesn't mean every page should use the loosest
+  read it allows.
+- **The edit page checks ownership itself, beyond RLS.** A trainer can
+  legitimately *read* another trainer's published guide (`guides_select`
+  allows it), so without an explicit check they could load someone
+  else's edit form and only discover on submit that `guides_update`
+  rejects the write. Redirecting non-owner/non-admin visitors away from
+  `/guides/[id]/edit` up front is a UX improvement, not a security
+  requirement — RLS was already the actual boundary.
+- **Added `@tailwindcss/typography`** for the live markdown preview
+  pane. The `prose` classes were in the first draft of `GuideForm`
+  before the plugin was installed — they'd have been silent no-ops
+  (Tailwind v4 doesn't warn on unrecognized utility classes), so this
+  was caught by checking rather than assuming the visual output.
+
+**Testing note**: proving the update/delete actions through the real
+UI (not just direct Supabase calls) required reverse-engineering
+Next.js's form encoding for *bound* server actions. `login`/`signup`
+are unbound actions and progressively enhance as a single hidden
+`$ACTION_ID_<hash>` field; `updateGuide`/`deleteGuide` are bound via
+`.bind(null, id)`, which encodes instead as `$ACTION_REF_<n>` +
+`$ACTION_<n>:0` (the real action id + a bound-closure marker) +
+`$ACTION_<n>:1` (the bound args, JSON-encoded). Submitting those three
+fields alongside the visible form fields reproduces exactly what a
+real browser posts with JS disabled.
