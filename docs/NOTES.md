@@ -264,3 +264,19 @@ placeholder — resolves the dead-code branch noted on 2026-07-09.
   locally in the dashboard) since browse and detail both need it too —
   three call sites was the point where the shared helper earned its
   keep.
+
+**Proved behaviorally**: signed in as each seeded role, hitting `/`
+(with and without a `?category=` filter) and a specific draft's
+`/guides/[id]` URL directly:
+
+- **Member**: browse shows exactly the 4 published seed guides, never
+  the draft (checked by grepping the response for the draft's title —
+  zero matches). `?category=nutrition` narrows to exactly the one
+  nutrition guide. Opening the draft's guide id directly →  real 404
+  ("This page could not be found"), not an error page. Opening a
+  published guide authored by the trainer renders normally with no
+  Edit button.
+- **Trainer**: opening their own draft's URL directly → 200, renders
+  the title, a "Draft" status pill, and an Edit button.
+- **Admin**: opening the same draft URL → 200 (admins can open any
+  draft, not just their own).
