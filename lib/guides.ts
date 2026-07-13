@@ -6,3 +6,7 @@ export const GUIDE_CATEGORIES = [
 ] as const;
 
 export type GuideCategory = (typeof GUIDE_CATEGORIES)[number]["value"];
+
+export function categoryLabel(value: string) {
+  return GUIDE_CATEGORIES.find((c) => c.value === value)?.label ?? value;
+}

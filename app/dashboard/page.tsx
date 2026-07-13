@@ -1,12 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { GuideStatusBadge } from "@/components/GuideStatusBadge";
-import { GUIDE_CATEGORIES } from "@/lib/guides";
+import { categoryLabel } from "@/lib/guides";
 import { createClient } from "@/lib/supabase/server";
-
-function categoryLabel(value: string) {
-  return GUIDE_CATEGORIES.find((c) => c.value === value)?.label ?? value;
-}
 
 export default async function DashboardPage() {
   const supabase = await createClient();

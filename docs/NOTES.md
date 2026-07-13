@@ -232,3 +232,35 @@ entirely:
   through the real form — `author_id` stayed the trainer's, confirming
   admin edits don't reassign ownership. Restored the guide's original
   title/body/status afterward so seed data stays clean.
+
+## 2026-07-13 — Browse + guide detail
+
+`/` is now the real browse page (`app/page.tsx`) instead of the
+placeholder — resolves the dead-code branch noted on 2026-07-09.
+`/guides/[id]` (`app/guides/[id]/page.tsx`) is new.
+
+- **Browse always filters `status = 'published'` explicitly**, for
+  every role, not just members. RLS would let a trainer's own drafts
+  through too, but browse is the public-facing list — drafts belong on
+  `/dashboard`, so the query narrows on purpose rather than relying on
+  RLS to be the only thing keeping drafts out of a shared list.
+- **The detail page's 404 comes for free from RLS, unlike the editor's
+  ownership check.** `guides_select` simply omits a row the caller
+  isn't allowed to see (draft, not theirs, not admin) rather than
+  erroring — so "doesn't exist" and "exists but you can't see it"
+  collapse into the same empty result, and `notFound()` on a missing
+  row is the whole mechanism. This is different from the edit page
+  (2026-07-09 entry), which needed an explicit ownership check because
+  a *published* guide is readable by anyone — the detail page has no
+  such gap, since visibility and read-access are the same question
+  there.
+- **Logout moved from the old placeholder into the browse page's
+  header** (a form next to the "LiftHub" heading) rather than a
+  site-wide nav — there still isn't a persistent header across
+  `/dashboard`/`/guides/*`, so logout is presently only reachable from
+  `/`. Left as a known gap for the step 7 polish pass rather than
+  building a full nav bar now.
+- Extracted `categoryLabel()` into `lib/guides.ts` (was duplicated
+  locally in the dashboard) since browse and detail both need it too —
+  three call sites was the point where the shared helper earned its
+  keep.
