@@ -280,3 +280,105 @@ placeholder — resolves the dead-code branch noted on 2026-07-09.
   the title, a "Draft" status pill, and an Edit button.
 - **Admin**: opening the same draft URL → 200 (admins can open any
   draft, not just their own).
+
+## 2026-07-14 — POST /api/personalize: two flagged decisions
+
+Building the route from design doc §5.1 (`app/api/personalize/route.ts`,
+`lib/ai.ts`, `lib/plan-schema.ts`, `lib/supabase/service.ts`). Two choices
+worth recording that weren't spelled out in the design doc's 7-step flow:
+
+- **Added a 400 for malformed request bodies.** The design doc's flow
+  starts at "resolve the session — 401 if absent" and doesn't mention
+  request-body shape at all. Without a check, a missing `guideId` or a
+  non-numeric `daysPerWeek` would fail later — either as an ugly
+  `.eq(undefined)` Postgres error surfaced as a 502, or as `NaN` silently
+  reaching the model prompt. Added `requestSchema` (zod, local to the
+  route file, distinct from `lib/plan-schema.ts` which validates the
+  *model's* output) and a 400 before the session-derived steps that
+  depend on a well-formed body. Flagging this since it's a step the
+  design doc doesn't call out — everything else in the route maps
+  1:1 to §5.1's numbered flow.
+- **Considered Anthropic's structured-outputs feature
+  (`output_config.format` with a JSON schema) and decided against it for
+  now.** Structured outputs would make the model's JSON shape
+  contractually valid, which reduces how often the 502 path fires — but
+  the design doc is explicit that `lib/plan-schema.ts` (zod) is the
+  validation boundary, and using structured outputs would make that
+  boundary mostly decorative (its failure mode becomes close to
+  unreachable in normal operation, which is also why it's not the way to
+  demonstrate the 502 path — see the behavioral proof below, which
+  forces a malformed response directly instead). Plain-prompt +
+  zod-validate is what's shipped; structured outputs is a reasonable
+  production hardening step for later, not a step back from what's here
+  — zod stays as the real boundary either way, since even a
+  schema-constrained model response is still an external system's output
+  and the code shouldn't trust it by construction.
+
+## 2026-07-14 — Personalize: model choice, prompt design, validation, proof
+
+**Model tier.** Design doc §6 calls for "a small, fast model tier" for
+personalize. First draft defaulted to `claude-opus-4-8` out of habit while
+building the route; caught and corrected before any live call — switched
+to `claude-haiku-4-5` (fastest, cheapest tier), which also meant dropping
+`thinking: {type: "adaptive"}` and `output_config.effort` from the
+request, since those are Opus/Sonnet-5/4.6+ features and 400 on Haiku 4.5.
+
+**Prompt design (`lib/ai.ts`).** The system prompt has two non-negotiable
+sections: safety constraints transcribed from requirements §7 (general
+fitness guidance only; no medical/injury/clinical claims; a note pointing
+to a professional whenever pain, injury, or a health condition comes up),
+and an explicit output-format spec matching `lib/plan-schema.ts` field for
+field (two top-level keys, exact shape of each `days[]`/`exercises[]`
+entry) so the model isn't guessing the shape from the design doc's example
+JSON alone. The user prompt is just the guide's title/category/body_md
+plus the member's equipment/days/level — no conversation history, no
+prior plans, single-shot per call.
+
+**Validation reasoning.** `generatePlan()` returns raw text and does *no*
+parsing — that split is deliberate, so a malformed response is a zod
+validation failure the route turns into 502, not an exception buried
+inside `lib/ai.ts`. One real gap surfaced immediately on the first live
+call: Haiku 4.5 wrapped its JSON in a ` ```json ` fence despite the prompt
+saying not to (log: `SyntaxError: Unexpected token '`', "```json\n{"... is
+not valid JSON`). Added `stripCodeFence()` in `lib/ai.ts` — strips one
+fence if present, otherwise leaves the text untouched — because this is a
+formatting artifact of *how* the model chose to wrap a correct answer, not
+a shape problem `lib/plan-schema.ts` should be responsible for catching.
+Genuine shape problems (missing field, wrong type, empty array) still fall
+through to zod and still 502. Also added a `console.error` in the route's
+catch block, server-side only — the client keeps the generic retry
+message; the raw error (which could include prompt/response content) never
+crosses into a response body.
+
+**Proved behaviorally**, signed in as `member@lifthub.dev` and
+`trainer@lifthub.dev` against the real Anthropic API (no mocking) and the
+real Postgres `plans` table:
+
+- **Real plan generation.** POSTed `{guideId: <Push/Pull/Legs>, equipment:
+  ["dumbbells","bench"], daysPerWeek: 3, level: "beginner"}` → `200` with a
+  real 3-day plan (dumbbell substitutions correctly reasoned from the
+  barbell-based original, e.g. "Dumbbell single-arm rows — swapped from
+  deadlift and barbell row"), a `notes` array including the
+  general-guidance disclaimer, and a real `planId`. Confirmed via a
+  service-role query that the row exists in `plans` with that exact id.
+- **Reload on revisit.** A fresh `GET /guides/[id]` (new request, no
+  client JS involved) embedded that same `planId` and plan content in the
+  server-rendered payload — the guide detail page's own `plans` query
+  (latest row for `user_id`+`guide_id`) found it without the client ever
+  calling the API again.
+- **Rate limit.** Drove the member account to exactly 10 `plans` rows for
+  the day (confirmed by direct count, not by trusting response codes
+  alone — one intermediate 429 got misattributed to the wrong request
+  while scripting the loop, so the DB count is what's cited here, not the
+  loop's console output). The next call after that returned `429
+  {"error":"daily personalization limit reached"}` with no new row
+  inserted.
+- **Malformed JSON.** Temporarily replaced `generatePlan()`'s return value
+  with a literal invalid string, restarted the dev server, and called the
+  real route (as the trainer account, to avoid the member's now-exhausted
+  daily limit) — `502 {"error":"personalization failed, please retry"}`,
+  with the server log showing the exact `JSON.parse` failure and no
+  `plans` row written. Reverted `lib/ai.ts` immediately after (confirmed
+  via `git status` — the file is untracked, so there's no diff to leave
+  behind), then re-ran a real call on the restored code to confirm nothing
+  was left broken.
