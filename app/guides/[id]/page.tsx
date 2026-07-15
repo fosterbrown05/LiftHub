@@ -3,16 +3,20 @@ import { notFound, redirect } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import { GuideStatusBadge } from "@/components/GuideStatusBadge";
 import { PersonalizePanel } from "@/components/PersonalizePanel";
+import { QASection, type QaPost } from "@/components/QASection";
 import { categoryLabel } from "@/lib/guides";
 import { planSchema } from "@/lib/plan-schema";
 import { createClient } from "@/lib/supabase/server";
 
 export default async function GuideDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ qaError?: string }>;
 }) {
   const { id } = await params;
+  const { qaError } = await searchParams;
 
   const supabase = await createClient();
   const {
@@ -34,26 +38,21 @@ export default async function GuideDetailPage({
 
   if (!guide) notFound();
 
-  let canEdit = guide.author_id === user.id;
-  if (!canEdit) {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
-    canEdit = profile?.role === "admin";
-  }
+  // One profile fetch covers the ownership check, the viewer's role for
+  // Q&A badges/gating, and the P1 pre-fill — role was previously a
+  // separate conditional query here before Q&A needed it unconditionally.
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role, equipment, days_per_week, level")
+    .eq("id", user.id)
+    .single();
+
+  const viewerRole = profile?.role ?? "member";
+  const canEdit = guide.author_id === user.id || viewerRole === "admin";
 
   const authorName =
     (guide.profiles as unknown as { display_name: string } | null)
       ?.display_name ?? "Unknown";
-
-  // P1 pre-fill: saved training preferences from the profile.
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("equipment, days_per_week, level")
-    .eq("id", user.id)
-    .single();
 
   // Latest saved plan for this (user, guide) — an ordinary client select
   // under plans_select (user_id = auth.uid()), no endpoint needed. The
@@ -75,6 +74,35 @@ export default async function GuideDetailPage({
     parsedPlan && parsedPlan.success
       ? { id: latestPlanRow!.id, plan: parsedPlan.data }
       : null;
+
+  // qa_select's RLS already scopes this to guides the caller can see;
+  // qa_insert additionally requires the guide be published, so the ask/
+  // answer forms below are gated on guide.status too (the DB would just
+  // reject the insert otherwise).
+  const { data: qaRows } = await supabase
+    .from("qa_posts")
+    .select("id, parent_id, author_id, author_role, body, created_at, profiles(display_name)")
+    .eq("guide_id", guide.id)
+    .order("created_at", { ascending: true });
+
+  const posts: QaPost[] = (qaRows ?? []).map((row) => ({
+    id: row.id,
+    parent_id: row.parent_id,
+    author_id: row.author_id,
+    author_role: row.author_role,
+    body: row.body,
+    created_at: row.created_at,
+    authorName:
+      (row.profiles as unknown as { display_name: string } | null)
+        ?.display_name ?? "Unknown",
+  }));
+
+  const questions = posts
+    .filter((p) => !p.parent_id)
+    .map((question) => ({
+      question,
+      answers: posts.filter((p) => p.parent_id === question.id),
+    }));
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-8">
@@ -127,6 +155,21 @@ export default async function GuideDetailPage({
           defaultEquipment={profile?.equipment ?? []}
           defaultDaysPerWeek={profile?.days_per_week ?? 3}
           defaultLevel={profile?.level ?? "beginner"}
+        />
+      </div>
+
+      <div className="mt-10 border-t border-zinc-200 pt-8 dark:border-zinc-800">
+        {qaError && (
+          <p className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+            {qaError}
+          </p>
+        )}
+        <QASection
+          guideId={guide.id}
+          questions={questions}
+          viewerId={user.id}
+          viewerRole={viewerRole}
+          canPost={guide.status === "published"}
         />
       </div>
     </div>
