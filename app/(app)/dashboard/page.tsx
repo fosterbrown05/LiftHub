@@ -47,7 +47,41 @@ export default async function DashboardPage() {
         </Link>
       </div>
 
-      <div className="mt-6 overflow-x-auto">
+      {/* Below md, a table wide enough for every column (Title/Category/
+          Status/Updated/Edit, plus Author for admins) just clips off-screen
+          with no scroll affordance — so under md this renders as a stacked
+          card list instead, and the table (still useful once there's room
+          for it) is md:block only. */}
+      <div className="mt-6 flex flex-col gap-3 md:hidden">
+        {guides?.map((guide) => (
+          <div
+            key={guide.id}
+            className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <span className="font-medium text-zinc-900 dark:text-zinc-50">
+                {guide.title}
+              </span>
+              <GuideStatusBadge status={guide.status} />
+            </div>
+            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+              {categoryLabel(guide.category)}
+              {isAdmin &&
+                ` · ${(guide.profiles as unknown as { display_name: string } | null)?.display_name ?? "—"}`}
+              {" · Updated "}
+              {new Date(guide.updated_at).toLocaleDateString()}
+            </p>
+            <Link
+              href={`/guides/${guide.id}/edit`}
+              className="mt-2 inline-block text-sm font-medium text-zinc-900 hover:underline dark:text-zinc-50"
+            >
+              Edit
+            </Link>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-6 hidden overflow-x-auto md:block">
         <table className="w-full min-w-[600px] text-left text-sm">
           <thead>
             <tr className="border-b border-zinc-200 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
@@ -95,13 +129,13 @@ export default async function DashboardPage() {
             ))}
           </tbody>
         </table>
-
-        {guides?.length === 0 && (
-          <p className="mt-6 text-sm text-zinc-600 dark:text-zinc-400">
-            {isAdmin ? "No guides yet." : "You haven't created any guides yet."}
-          </p>
-        )}
       </div>
+
+      {guides?.length === 0 && (
+        <p className="mt-6 text-sm text-zinc-600 dark:text-zinc-400">
+          {isAdmin ? "No guides yet." : "You haven't created any guides yet."}
+        </p>
+      )}
     </div>
   );
 }
