@@ -1,6 +1,6 @@
 "use client";
 
-import { updateUserRole, deleteUserAccount } from "@/app/admin/users/actions";
+import { updateUserRole, deleteUserAccount } from "@/app/(app)/admin/users/actions";
 
 const ROLES = ["member", "trainer", "admin"] as const;
 

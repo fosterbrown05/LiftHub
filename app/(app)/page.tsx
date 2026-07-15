@@ -2,7 +2,6 @@ import Link from "next/link";
 import { GuideCard } from "@/components/GuideCard";
 import { GUIDE_CATEGORIES } from "@/lib/guides";
 import { createClient } from "@/lib/supabase/server";
-import { logout } from "./(auth)/actions";
 
 export default async function Home({
   searchParams,
@@ -11,13 +10,11 @@ export default async function Home({
 }) {
   const { category } = await searchParams;
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
 
   // Browse only ever shows published guides, for every role — the proxy
-  // already guarantees `user` is set here, but drafts belong on /dashboard,
-  // not the public-facing list, even for the trainer who owns them.
+  // already guarantees a session exists here, but drafts belong on
+  // /dashboard, not the public-facing list, even for the trainer who
+  // owns them.
   let query = supabase
     .from("guides")
     .select("id, title, category, updated_at, profiles(display_name)")
@@ -32,21 +29,9 @@ export default async function Home({
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
-          LiftHub
-        </h1>
-        {user && (
-          <form action={logout}>
-            <button
-              type="submit"
-              className="text-sm font-medium text-zinc-600 hover:underline dark:text-zinc-400"
-            >
-              Log out
-            </button>
-          </form>
-        )}
-      </div>
+      <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
+        Browse guides
+      </h1>
 
       <div className="mt-6 flex flex-wrap gap-2">
         <Link

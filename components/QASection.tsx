@@ -1,6 +1,6 @@
 "use client";
 
-import { askQuestion, postAnswer, deleteQaPost } from "@/app/guides/qa-actions";
+import { askQuestion, postAnswer, deleteQaPost } from "@/app/(app)/guides/qa-actions";
 import { RoleBadge } from "@/components/RoleBadge";
 
 type Role = "member" | "trainer" | "admin";
