@@ -382,3 +382,104 @@ real Postgres `plans` table:
   via `git status` — the file is untracked, so there's no diff to leave
   behind), then re-ran a real call on the restored code to confirm nothing
   was left broken.
+
+## 2026-07-15 — Q&A + admin panel (build order step 6)
+
+Two features, two commits: Q&A on the guide detail page
+(`app/guides/qa-actions.ts`, `components/QASection.tsx`,
+`components/RoleBadge.tsx`), then the admin panel
+(`app/admin/users/`, `components/AdminUsersTable.tsx`). No new
+migration — qa_posts, `qa_stamp`, `qa_flat`, and every RLS policy this
+step needed were already in migrations 0001–0003; this step was UI and
+server actions only.
+
+- **Q&A UI is a thin layer over RLS/triggers, on purpose.** All three
+  server actions (`askQuestion`, `postAnswer`, `deleteQaPost`) do
+  nothing but call `supabase.from("qa_posts")` under the caller's own
+  session — no ownership or role checks in application code, because
+  `qa_insert`/`qa_delete`/`qa_flat` already are that check. The one
+  place the UI narrows ahead of the database: the answer form only
+  renders under a question (never under another answer) and only for
+  trainer/admin viewers, and the ask/answer forms disappear entirely on
+  a draft guide — matching `qa_insert`'s "published guides only" so a
+  member never even sees a control the database would reject.
+- **Account deletion is the one action in this app where an
+  authorization check lives in application code, not the database**
+  (`app/admin/users/actions.ts`, `deleteUserAccount`). Role changes stay
+  fully DB-enforced — `updateUserRole` just calls the `set_user_role`
+  RPC, which is `security definer` and already raises `admins only`
+  itself, so the action re-checks nothing. But deleting an *account*
+  means removing the `auth.users` row, which isn't reachable through
+  RLS at all — only `service.auth.admin.deleteUser()` can do it, and
+  that call bypasses every policy in the database by construction.
+  Since nothing downstream would refuse an unauthorized call, this
+  action checks `profiles.role === 'admin'` itself before ever
+  constructing the service client. Flagging this per CLAUDE.md's "extra
+  scrutiny" rule for auth code — it's a deliberate, narrow exception to
+  "RLS is the only real boundary," not an oversight.
+- **The admin panel hides self-role-change and self-delete controls in
+  the UI** (own row renders as plain text, no Save/Delete buttons).
+  Purely a UX guard against locking yourself out mid-demo — RLS and
+  `set_user_role` don't grant any special protection for acting on your
+  own row, so this is cosmetic, not a security boundary.
+- **Proof methodology note**: several proofs below exercise the same
+  Postgres session a Server Action would use — signed in via
+  `supabase-js` as the seeded account, calling the same
+  `.from("qa_posts")`/`.rpc(...)` the action calls — rather than driving
+  a browser, since there's no browser tool available in this session.
+  This is the same code path (`qa-actions.ts`/`admin/users/actions.ts`
+  do nothing but that same call), so it proves the actual boundary
+  (RLS/triggers/RPC) rather than a simulation of it. The one proof that
+  needed real HTTP + real middleware (the promotion/demotion
+  centerpiece) used `@supabase/ssr`'s own cookie-jar logic against the
+  real `next dev` server, so that one is a real browser-equivalent
+  session, not a shortcut.
+
+**Proved behaviorally**, against the real hosted Supabase project (no
+local/Docker instance — `supabase/config.toml` is for local dev but
+this project links straight to the hosted DB) and a real `next dev`
+server:
+
+- **Trainer answer shows its badge.** Signed in as `member@lifthub.dev`
+  via `supabase-js`, inserted a question on the seeded "Push/Pull/Legs"
+  guide. Signed in as `trainer@lifthub.dev`, inserted an answer
+  (`parent_id` = the question). The returned row's `author_role` came
+  back `'trainer'` — stamped by the `qa_stamp` trigger from the
+  trainer's actual `profiles.role` at insert time, never sent by the
+  client.
+- **Reply-to-reply rejected by `qa_flat`.** Attempted a third insert
+  with `parent_id` = the trainer's answer (a reply to a reply) →
+  rejected with `"answers cannot have replies"`, the exact exception
+  text from migration 0002's `check_flat_thread()`.
+- **Deleting a question removes its answers.** Confirmed one answer row
+  existed under the question (`parent_id` count = 1), then deleted the
+  question as its author (the member). A service-role check afterward
+  found both the question and its answer gone — the `on delete cascade`
+  on `qa_posts.parent_id`, no application-level fan-out.
+- **Non-admin calling `set_user_role` is refused.** Both
+  `member@lifthub.dev` and `trainer@lifthub.dev` called
+  `supabase.rpc('set_user_role', { target: <trainer's id>, new_role:
+  'admin' })` directly → both refused with `"admins only"`, the
+  exception `set_user_role` raises when `my_role() <> 'admin'`
+  (migration 0003).
+- **The centerpiece: promote takes effect without re-login, demote
+  locks it back.** One `supabase-js` session for `member@lifthub.dev`
+  (single password sign-in, one cookie jar, reused for every request
+  below — no second login anywhere in this sequence):
+  1. `GET /dashboard` with that member's cookie → `307` to `/`
+     (blocked, still `role = 'member'`).
+  2. Separately, `admin@lifthub.dev` called
+     `set_user_role(target: <member id>, new_role: 'trainer')`.
+  3. `GET /dashboard` again — **same cookie, no new sign-in** — → `200`,
+     page renders. This is the freshness property design doc §3.3 calls
+     out: middleware reads role via a `profiles` query per gated
+     request, not a JWT claim, so a promotion applies on the very next
+     request instead of waiting for token refresh.
+  4. Admin called `set_user_role(target: <member id>, new_role:
+     'member')` to demote.
+  5. `GET /dashboard` again — same cookie, still no re-login — → `307`
+     to `/` again: access is revoked exactly as immediately as it was
+     granted.
+  Confirmed the seed roles were back to their defaults
+  (member/trainer/admin) and `qa_posts` back to empty after cleanup —
+  no test data left behind.
